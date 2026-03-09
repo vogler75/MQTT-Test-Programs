@@ -74,14 +74,14 @@ impl UIContext {
     }
 
     pub fn next_field(&mut self) {
-        self.field_index = (self.field_index + 1) % 13; // 13 fields total now
+        self.field_index = (self.field_index + 1) % 12; // 12 fields total now
         self.input_buffer.clear();
         self.in_edit_mode = false;
     }
 
     pub fn prev_field(&mut self) {
         if self.field_index == 0 {
-            self.field_index = 12;
+            self.field_index = 11;
         } else {
             self.field_index -= 1;
         }
@@ -142,10 +142,6 @@ impl UIContext {
                 }
             }
             11 => {
-                self.config.use_leafs = self.input_buffer.to_lowercase() == "true"
-                    || self.input_buffer == "1";
-            }
-            12 => {
                 self.config.use_wildcard = self.input_buffer.to_lowercase() == "true"
                     || self.input_buffer == "1";
             }
@@ -184,7 +180,6 @@ pub fn draw_config_screen(f: &mut Frame, ui: &UIContext) {
     let retained_str = ui.config.retained.to_string();
     let topic_prefix_str = ui.config.topic_prefix.clone();
     let subscribe_percentage_str = ui.config.subscribe_percentage.to_string();
-    let use_leafs_str = ui.config.use_leafs.to_string();
     let use_wildcard_str = ui.config.use_wildcard.to_string();
 
     let fields: Vec<(&str, String)> = vec![
@@ -199,7 +194,6 @@ pub fn draw_config_screen(f: &mut Frame, ui: &UIContext) {
         ("Retained", retained_str),
         ("Topic Prefix", topic_prefix_str),
         ("Subscribe %", subscribe_percentage_str),
-        ("Use Leafs", use_leafs_str),
         ("Wildcard", use_wildcard_str),
     ];
 
@@ -339,7 +333,13 @@ pub async fn handle_ui_input(ui: &mut UIContext) -> Option<bool> {
     if event::poll(Duration::from_millis(50)).ok()? {
         if let Event::Key(key) = event::read().ok()? {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Char('Q') => return Some(false),
+                KeyCode::Char(c @ 'q') | KeyCode::Char(c @ 'Q') => {
+                    if ui.in_edit_mode {
+                        ui.input_buffer.push(c);
+                    } else {
+                        return Some(false);
+                    }
+                }
                 KeyCode::Char(c @ 's') | KeyCode::Char(c @ 'S') => {
                     // Save configuration - only if not currently typing
                     if matches!(ui.state, UIState::ConfigInput) && ui.input_buffer.is_empty() {

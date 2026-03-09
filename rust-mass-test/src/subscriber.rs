@@ -1,4 +1,4 @@
-use rumqttc::{AsyncClient, Event, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Event, QoS};
 use tokio::time;
 use std::time::Duration;
 use std::sync::Arc;
@@ -22,18 +22,10 @@ pub async fn run(config: Arc<Config>, metrics: Arc<ClientMetrics>, mut shutdown_
     );
 
     // Get topics to subscribe to (once, reuse for reconnections)
-    let (all_topics, is_wildcard) = if config.use_leafs {
-        if config.use_wildcard {
-            (topic_generator.generate_wildcard_subscriptions(), true)
-        } else {
-            (topic_generator.generate_leaves_only(), false)
-        }
+    let (all_topics, is_wildcard) = if config.use_wildcard {
+        (topic_generator.generate_wildcard_subscriptions(), true)
     } else {
-        if config.use_wildcard {
-            (topic_generator.generate_single_wildcard(), true)
-        } else {
-            (topic_generator.generate_all(), false)
-        }
+        (topic_generator.generate_all(), false)
     };
 
     let total_topics_count = all_topics.len();
@@ -59,25 +51,32 @@ pub async fn run(config: Arc<Config>, metrics: Arc<ClientMetrics>, mut shutdown_
         }
 
         log_buffer.log(format!("Subscriber {}: [DEBUG] Connecting to {}:{} with client ID {}", metrics.id + 1, &config.broker_host, config.broker_port, client_id));
-        let mut mqttoptions = MqttOptions::new(client_id.clone(), &config.broker_host, config.broker_port);
+        let mut mqttoptions = config.create_mqtt_options(client_id.clone());
         mqttoptions.set_keep_alive(Duration::from_secs(120));
+        mqttoptions.set_max_packet_size(100 * 1024, 100 * 1024);
         log_buffer.log(format!("Subscriber {}: [DEBUG] MqttOptions configured", metrics.id + 1));
 
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
         log_buffer.log(format!("Subscriber {}: [DEBUG] Client created, waiting for events", metrics.id + 1));
 
-        // Debug output to show what we're actually subscribing to
-        if config.use_leafs && config.use_wildcard {
-            log_buffer.log(format!("Subscriber {}: Using WILDCARD at parent-of-leaf level: {:?}", metrics.id + 1, topics_to_subscribe));
-        } else if config.use_leafs {
-            log_buffer.log(format!("Subscriber {}: Using individual LEAF topics ({} total)", metrics.id + 1, sub_count));
-        } else if config.use_wildcard {
-            log_buffer.log(format!("Subscriber {}: Using WILDCARD subscription at base level: {:?}", metrics.id + 1, topics_to_subscribe));
+        // Debug output to show subscription paths
+        if config.use_wildcard {
+            log_buffer.log(format!("Subscriber {}: Using WILDCARD subscriptions ({} total):", metrics.id + 1, sub_count));
         } else {
-            log_buffer.log(format!("Subscriber {}: Using ALL topics ({} total)", metrics.id + 1, sub_count));
+            log_buffer.log(format!("Subscriber {}: Using ALL topic subscriptions ({} total):", metrics.id + 1, sub_count));
         }
 
-        log_buffer.log(format!("Subscriber {}: Subscribing to {} topics...", metrics.id + 1, sub_count));
+        // Print subscription paths (limit to first 5 for readability)
+        for (idx, topic) in topics_to_subscribe.iter().enumerate() {
+            if idx < 5 {
+                log_buffer.log(format!("Subscriber {}: [{}] {}", metrics.id + 1, idx + 1, topic));
+            } else if idx == 5 {
+                log_buffer.log(format!("Subscriber {}: ... and {} more topics", metrics.id + 1, sub_count - 5));
+                break;
+            }
+        }
+
+        log_buffer.log(format!("Subscriber {}: Starting subscription process...", metrics.id + 1));
 
         let mut topic_index = 0;
         let mut subscribed_count = 0;

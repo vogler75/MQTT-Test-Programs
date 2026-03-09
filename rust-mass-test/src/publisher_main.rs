@@ -22,12 +22,12 @@ use tokio::task::JoinHandle;
 #[command(about = "Fast MQTT test program with console GUI", long_about = None)]
 struct Args {
     /// MQTT broker host
-    #[arg(long, default_value = "localhost")]
-    broker: String,
+    #[arg(long)]
+    broker: Option<String>,
 
     /// MQTT broker port
-    #[arg(long, default_value = "1883")]
-    port: u16,
+    #[arg(long)]
+    port: Option<u16>,
 
     /// Configuration file to load (JSON)
     #[arg(long)]
@@ -56,8 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut config = Config::load_or_default(config_file);
-    config.broker_host = args.broker;
-    config.broker_port = args.port;
+    if let Some(broker) = args.broker { config.broker_host = broker; }
+    if let Some(port) = args.port { config.broker_port = port; }
 
     // Notify user if config was loaded
     if config_file.is_some() {
@@ -182,7 +182,7 @@ async fn run_ui(initial_config: &Config) -> Result<(), Box<dyn std::error::Error
 async fn run_producers_with_ui(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(config.clone());
     let metrics = Arc::new(Mutex::new(GlobalMetrics::new(config.num_producers)));
-    let log_buffer = LogBuffer::new(100); // Keep last 100 log lines
+    let log_buffer = LogBuffer::new(1000); // Keep last 1000 log lines
 
     println!("\n📊 Starting {} producers...", config.num_producers);
 
@@ -219,9 +219,21 @@ async fn run_producers_with_ui(config: &Config) -> Result<(), Box<dyn std::error
 
     // Run without TUI - just let producers run and show logs from background
     let mut metrics_timer = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut last_log_index = 0;
     loop {
         tokio::select! {
             _ = metrics_timer.tick() => {
+                // Print any new logs first
+                let logs = log_buffer.get_logs();
+                if last_log_index < logs.len() {
+                    let _ = disable_raw_mode();
+                    for log in &logs[last_log_index..] {
+                        println!("{}", log);
+                    }
+                    let _ = enable_raw_mode();
+                    last_log_index = logs.len();
+                }
+
                 // Print metrics every second
                 let metrics_guard = metrics.lock().unwrap();
                 let total_published = metrics_guard.get_total_published();

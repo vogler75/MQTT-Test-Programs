@@ -1,0 +1,15 @@
+{
+  "broker_host": "etm-pc",
+  "broker_port": 1883,
+  "num_producers": 1,
+  "num_topics": 10,
+  "topics_per_node": 10,
+  "max_depth": 3,
+  "sleep_ms": 10,
+  "qos": 0,
+  "retained": false,
+  "topic_prefix": "linux0/",
+  "subscribe_percentage": 10,
+  "use_leafs": true,
+  "use_wildcard": false
+}

@@ -4,7 +4,7 @@ use crate::topic::TopicGenerator;
 use crate::ui::LogBuffer;
 use bytes::Bytes;
 use chrono::Utc;
-use rumqttc::{AsyncClient, Event, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Event, QoS};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,14 +30,14 @@ pub async fn run_producer(
         }
 
         // Create MQTT connection options
-        let mut mqttoptions = MqttOptions::new(
-            client_id.clone(),
-            config.broker_host.clone(),
-            config.broker_port,
-        );
+        let mut mqttoptions = config.create_mqtt_options(client_id.clone());
         mqttoptions.set_keep_alive(Duration::from_secs(120));
         mqttoptions.set_max_packet_size(100 * 1024, 100 * 1024);
-        mqttoptions.set_inflight(10); // Small buffer to avoid overwhelming broker and ensure sends
+
+        // For zero-delay mode, use large inflight buffer to maximize throughput
+        // For normal mode, use a moderate buffer for efficiency
+        let inflight = if config.sleep_ms == 0 { 100 } else { 10 };
+        mqttoptions.set_inflight(inflight);
 
         // Create client and connection
         let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
@@ -89,94 +89,161 @@ pub async fn run_producer(
             config.max_depth,
         );
 
-        let topics: Vec<String> = if config.use_leafs {
-            topic_gen.generate_leaves_only()
-        } else {
-            topic_gen.generate_all()
-        };
+        let topics: Vec<String> = topic_gen.generate_all();
         let qos = match config.qos {
             0 => QoS::AtMostOnce,
             1 => QoS::AtLeastOnce,
             _ => QoS::ExactlyOnce,
         };
 
+        let mode_str = if config.sleep_ms == 0 { "FAST (no delay)" } else { &format!("{} ms", config.sleep_ms) };
         log_buffer.log(format!(
-            "Producer {}: Starting with {} topics, sleep_ms={}",
+            "Producer {}: Starting with {} topics, mode={}",
             producer_id + 1,
             topics.len(),
-            config.sleep_ms
+            mode_str
         ));
-
-        // Create a timer for publishing with the configured sleep_ms
-        let mut publish_timer = time::interval(Duration::from_millis(config.sleep_ms));
 
         // Track which topic to publish to
         let mut topic_index = 0;
 
         // Main publishing loop (inner loop, reconnects on error)
         let mut should_shutdown = false;
-        loop {
-            tokio::select! {
-                _ = shutdown_rx.changed() => {
+
+        if config.sleep_ms == 0 {
+            // Fast mode: publish as fast as possible
+            // Spawn eventloop polling on a background task
+            let eventloop_task = tokio::spawn(async move {
+                loop {
+                    if let Ok(event) = eventloop.poll().await {
+                        match event {
+                            Event::Incoming(rumqttc::Packet::Disconnect) => {
+                                break;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+
+            // Publish as fast as possible in the main loop
+            loop {
+                // Check if background task crashed
+                if eventloop_task.is_finished() {
+                    log_buffer.log(format!("Producer {}: Event loop task finished, reconnecting...", producer_id + 1));
+                    metrics.set_connected(false);
+                    break;
+                }
+
+                if *shutdown_rx.borrow() {
                     log_buffer.log(format!("Producer {}: Received shutdown signal. Disconnecting...", producer_id + 1));
                     let _ = client.disconnect().await;
                     metrics.set_connected(false);
                     should_shutdown = true;
                     break;
                 }
-                _ = pause_rx.changed() => {
-                    // Pause state changed, just acknowledge it by continuing the loop
+
+                if *pause_rx.borrow() {
+                    tokio::task::yield_now().await;
+                    continue;
                 }
-                event = eventloop.poll() => {
-                    match event {
-                        Ok(Event::Incoming(rumqttc::Packet::Disconnect)) => {
-                            log_buffer.log(format!("Producer {}: ⚠️  Broker sent DISCONNECT, reconnecting...", producer_id + 1));
-                            metrics.set_connected(false);
-                            break;
-                        }
-                        Ok(Event::Incoming(_)) => {},
-                        Ok(Event::Outgoing(_)) => {},
-                        Err(e) => {
-                            log_buffer.log(format!("Producer {}: ⚠️  Connection error: {:?}, reconnecting...", producer_id + 1, e));
-                            metrics.set_connected(false);
-                            // Break on connection errors to trigger reconnection
-                            break;
-                        }
+
+                // Generate payload
+                let counter = metrics.get_counter();
+                let random_value: f64 = fastrand::f64();
+                let timestamp = Utc::now().to_rfc3339();
+
+                let payload = json!({
+                    "ts": timestamp,
+                    "counter": counter,
+                    "value": random_value,
+                });
+
+                let payload_bytes = Bytes::from(payload.to_string());
+                let topic = &topics[topic_index % topics.len()];
+
+                // Publish - the await will naturally allow event loop to process
+                match client.publish(topic.clone(), qos, config.retained, payload_bytes).await {
+                    Ok(_) => {
+                        metrics.increment_published();
+                        topic_index += 1;
+                    }
+                    Err(e) => {
+                        log_buffer.log(format!("Producer {}: Publish error: {}", producer_id + 1, e));
+                        metrics.set_connected(false);
+                        break;
                     }
                 }
-                _ = publish_timer.tick() => {
-                    // Check if paused before publishing
-                    if *pause_rx.borrow() {
-                        continue; // Skip publishing but keep the timer ticking
+            }
+
+            eventloop_task.abort();
+        } else {
+            // Timed mode: publish at configured interval
+            let mut publish_timer = time::interval(Duration::from_millis(config.sleep_ms));
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {
+                        log_buffer.log(format!("Producer {}: Received shutdown signal. Disconnecting...", producer_id + 1));
+                        let _ = client.disconnect().await;
+                        metrics.set_connected(false);
+                        should_shutdown = true;
+                        break;
                     }
-
-                    // Generate payload
-                    let counter = metrics.get_counter();
-                    let random_value: f64 = fastrand::f64();
-                    let timestamp = Utc::now().to_rfc3339();
-
-                    let payload = json!({
-                        "ts": timestamp,
-                        "counter": counter,
-                        "value": random_value,
-                    });
-
-                    let payload_bytes = Bytes::from(payload.to_string());
-
-                    let topic = &topics[topic_index % topics.len()];
-                    match client.publish(topic.clone(), qos, config.retained, payload_bytes).await {
-                        Ok(_) => {
-                            metrics.increment_published();
-                            // Small yield to let eventloop process the message
-                            tokio::task::yield_now().await;
-                        }
-                        Err(e) => {
-                            log_buffer.log(format!("Producer {}: Publish error: {}", producer_id + 1, e));
+                    _ = pause_rx.changed() => {
+                        // Pause state changed, just acknowledge it by continuing the loop
+                    }
+                    event = eventloop.poll() => {
+                        match event {
+                            Ok(Event::Incoming(rumqttc::Packet::Disconnect)) => {
+                                log_buffer.log(format!("Producer {}: ⚠️  Broker sent DISCONNECT, reconnecting...", producer_id + 1));
+                                metrics.set_connected(false);
+                                break;
+                            }
+                            Ok(Event::Incoming(_)) => {},
+                            Ok(Event::Outgoing(_)) => {},
+                            Err(e) => {
+                                log_buffer.log(format!("Producer {}: ⚠️  Connection error: {:?}, reconnecting...", producer_id + 1, e));
+                                metrics.set_connected(false);
+                                break;
+                            }
                         }
                     }
+                    _ = publish_timer.tick() => {
+                        // Check if paused before publishing
+                        if *pause_rx.borrow() {
+                            continue; // Skip publishing but keep the timer ticking
+                        }
 
-                    // Move to next topic for next publish
-                    topic_index += 1;
+                        // Generate payload
+                        let counter = metrics.get_counter();
+                        let random_value: f64 = fastrand::f64();
+                        let timestamp = Utc::now().to_rfc3339();
+
+                        let payload = json!({
+                            "ts": timestamp,
+                            "counter": counter,
+                            "value": random_value,
+                        });
+
+                        let payload_bytes = Bytes::from(payload.to_string());
+
+                        let topic = &topics[topic_index % topics.len()];
+                        match client.publish(topic.clone(), qos, config.retained, payload_bytes).await {
+                            Ok(_) => {
+                                metrics.increment_published();
+                                // Messages sent immediately due to configured inflight size
+                            }
+                            Err(e) => {
+                                log_buffer.log(format!("Producer {}: Publish error: {}", producer_id + 1, e));
+                            }
+                        }
+
+                        // Move to next topic for next publish
+                        topic_index += 1;
+                    }
                 }
             }
         }

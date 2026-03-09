@@ -90,7 +90,7 @@ impl TopicGenerator {
             // Build the full topic path
             let mut full_path = base.to_string();
             for component in &path {
-                full_path.push_str(&format!("/{:02}", component));
+                full_path.push_str(&format!("/{:05}", component));
             }
             topics.push(full_path);
             return;
@@ -115,12 +115,12 @@ mod tests {
         let topics = gen.generate_all();
 
         assert!(topics.contains(&"test00001".to_string()));
-        assert!(topics.contains(&"test00001/01".to_string()));
-        assert!(topics.contains(&"test00001/02".to_string()));
-        assert!(topics.contains(&"test00001/01/01".to_string()));
-        assert!(topics.contains(&"test00001/01/02".to_string()));
-        assert!(topics.contains(&"test00001/02/01".to_string()));
-        assert!(topics.contains(&"test00001/02/02".to_string()));
+        assert!(topics.contains(&"test00001/00001".to_string()));
+        assert!(topics.contains(&"test00001/00002".to_string()));
+        assert!(topics.contains(&"test00001/00001/00001".to_string()));
+        assert!(topics.contains(&"test00001/00001/00002".to_string()));
+        assert!(topics.contains(&"test00001/00002/00001".to_string()));
+        assert!(topics.contains(&"test00001/00002/00002".to_string()));
     }
 
     #[test]
@@ -130,12 +130,12 @@ mod tests {
 
         // Should only contain leaf topics (at max_depth)
         assert!(!topics.contains(&"test00001".to_string()));
-        assert!(!topics.contains(&"test00001/01".to_string()));
-        assert!(!topics.contains(&"test00001/02".to_string()));
-        assert!(topics.contains(&"test00001/01/01".to_string()));
-        assert!(topics.contains(&"test00001/01/02".to_string()));
-        assert!(topics.contains(&"test00001/02/01".to_string()));
-        assert!(topics.contains(&"test00001/02/02".to_string()));
+        assert!(!topics.contains(&"test00001/00001".to_string()));
+        assert!(!topics.contains(&"test00001/00002".to_string()));
+        assert!(topics.contains(&"test00001/00001/00001".to_string()));
+        assert!(topics.contains(&"test00001/00001/00002".to_string()));
+        assert!(topics.contains(&"test00001/00002/00001".to_string()));
+        assert!(topics.contains(&"test00001/00002/00002".to_string()));
         assert_eq!(topics.len(), 4); // Should have exactly 4 leaf topics (2^2)
     }
 
@@ -145,8 +145,8 @@ mod tests {
         let topics = gen.generate_wildcard_subscriptions();
 
         // Should contain parent topics with wildcard
-        assert!(topics.contains(&"test00001/01/#".to_string()));
-        assert!(topics.contains(&"test00001/02/#".to_string()));
+        assert!(topics.contains(&"test00001/00001/#".to_string()));
+        assert!(topics.contains(&"test00001/00002/#".to_string()));
         assert_eq!(topics.len(), 2); // Should have 2 parent topics (topics_per_node=2)
     }
 

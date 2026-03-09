@@ -12,7 +12,7 @@ name = "mqtt-subscribe"
 path = "src/subscriber_main.rs"
 
 [dependencies]
-rumqttc = "0.24"
+rumqttc = { version = "0.24", features = ["websocket"] }
 tokio = { version = "1", features = ["full"] }
 ratatui = "0.28"
 serde = { version = "1.0", features = ["derive"] }
